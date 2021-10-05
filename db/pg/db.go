@@ -76,6 +76,9 @@ func (c pgCreator) Create(p *properties.Properties) (ycsb.DB, error) {
 	sslMode := p.GetString(pdSSLMode, "disable")
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s", user, password, host, port, dbName, sslMode)
+	if strings.HasPrefix(host, "postgres://") || strings.Contains(host, "=") {
+		dsn = host // because pgHost defines full connection string
+	}
 	var err error
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
