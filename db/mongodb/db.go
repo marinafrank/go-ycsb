@@ -2,9 +2,13 @@ package mongodb
 
 import (
 	"context"
+	"crypto/x509"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"log"
+	"strings"
 
 	"github.com/magiconair/properties"
 	"github.com/pingcap/go-ycsb/pkg/ycsb"
@@ -15,20 +19,23 @@ import (
 )
 
 const (
-	mongodbUrl        = "mongodb.url"
-	mongodbAuthdb     = "mongodb.authdb"
-	mongodbUsername   = "mongodb.username"
-	mongodbPassword   = "mongodb.password"
+	mongodbUri           = "mongodb.uri"
+	mongodbTLSSkipVerify = "mongodb.tlsSkipVerify"
+	mongodbTLSCAFile     = "mongodb.tlsCaFile"
+	mongodbNamespace     = "mongodb.namespace"
+	mongodbAuthdb        = "mongodb.authdb"
+	mongodbUsername      = "mongodb.username"
+	mongodbPassword      = "mongodb.password"
 
 	// see https://github.com/brianfrankcooper/YCSB/tree/master/mongodb#mongodb-configuration-parameters
-	mongodbUrlDefault        = "mongodb://127.0.0.1:27017/ycsb?w=1"
-	mongodbDatabaseDefault   = "ycsb"
-	mongodbAuthdbDefault     = "admin"
+	mongodbUrlDefault      = "mongodb://127.0.0.1:27017/ycsb?w=1"
+	mongodbDatabaseDefault = "ycsb"
+	mongodbAuthdbDefault   = "admin"
 )
 
 type mongoDB struct {
-	cli  *mongo.Client
-	db   *mongo.Database
+	cli *mongo.Client
+	db  *mongo.Database
 }
 
 func (db *mongoDB) ToSqlDB() *sql.DB {
@@ -125,10 +132,13 @@ type mongodbCreator struct {
 }
 
 func (c mongodbCreator) Create(p *properties.Properties) (ycsb.DB, error) {
-	uri := p.GetString(mongodbUrl, mongodbUrlDefault)
+	uri := p.GetString(mongodbUri, mongodbUrlDefault)
 	authdb := p.GetString(mongodbAuthdb, mongodbAuthdbDefault)
+	tlsSkipVerify := p.GetBool(mongodbTLSSkipVerify, false)
+	caFile := p.GetString(mongodbTLSCAFile, "")
 
-	if _, err := connstring.Parse(uri); err != nil {
+	connString, err := connstring.Parse(uri)
+	if err != nil {
 		return nil, err
 	}
 
@@ -136,6 +146,27 @@ func (c mongodbCreator) Create(p *properties.Properties) (ycsb.DB, error) {
 	defer cancel()
 
 	cliOpts := options.Client().ApplyURI(uri)
+	if len(connString.Hosts) > 0 {
+		servername := strings.Split(connString.Hosts[0], ":")[0]
+		fmt.Printf("using server name for tls: %s\n", servername)
+		cliOpts.TLSConfig.ServerName = servername
+	}
+	if tlsSkipVerify {
+		fmt.Println("skipping tls cert validation")
+		cliOpts.TLSConfig.InsecureSkipVerify = true
+	}
+
+	if caFile != "" {
+		// Load CA cert
+		caCert, err := ioutil.ReadFile(caFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+
+		cliOpts.TLSConfig.RootCAs = caCertPool
+	}
 
 	username, usrExist := p.Get(mongodbUsername)
 	password, pwdExist := p.Get(mongodbPassword)
@@ -162,8 +193,8 @@ func (c mongodbCreator) Create(p *properties.Properties) (ycsb.DB, error) {
 	fmt.Println("Connected to MongoDB!")
 
 	m := &mongoDB{
-		cli:      cli,
-		db:       cli.Database(mongodbDatabaseDefault),
+		cli: cli,
+		db:  cli.Database(mongodbDatabaseDefault),
 	}
 	return m, nil
 }
